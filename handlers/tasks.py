@@ -29,47 +29,6 @@ class AddTask(StatesGroup):
 class StudentSearch(StatesGroup):
     waiting_name = State()
 
-# ====================== МЕНЮ ======================
-
-@router.callback_query(F.data == "menu_today")
-async def menu_today(callback: CallbackQuery):
-    await callback.message.delete()
-    await show_today(callback.message, callback.from_user.id)
-    await callback.answer()
-
-@router.callback_query(F.data == "menu_list")
-async def menu_list(callback: CallbackQuery):
-    await callback.message.delete()
-    await show_list(callback.message, callback.from_user.id)
-    await callback.answer()
-
-@router.callback_query(F.data == "menu_add")
-async def menu_add(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AddTask.category)
-    await callback.message.edit_text("Выбери категорию:", reply_markup=categories_kb())
-    await callback.answer()
-
-@router.callback_query(F.data == "menu_student")
-async def menu_student(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(StudentSearch.waiting_name)
-    await callback.message.edit_text(
-        "Введи фамилию Ученика (можно часть):\n\n"
-        "Например: Иванов или Ива"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("Меню:", reply_markup=main_menu_kb())
-    await callback.answer()
-
-@router.callback_query(F.data == "cancel")
-async def cancel(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("Отменено.\n\nМеню:", reply_markup=main_menu_kb())
-    await callback.answer()
-
 # ====================== СЕГОДНЯ / СПИСОК ======================
 
 async def show_today(message: Message, user_id: int):
