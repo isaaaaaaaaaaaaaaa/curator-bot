@@ -319,14 +319,6 @@ async def back_to_list(callback: CallbackQuery):
 
 # ====================== ИМПОРТ .ICS ======================
 
-@router.callback_query(F.data == "menu_import")
-async def menu_import(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "Пришли мне файл `.ics` (календарь).\n\n"
-        "Я извлеку события на ближайшие 30 дней и предложу добавить их как задачи."
-    )
-    await callback.answer()
-
 @router.message(F.document)
 async def handle_ics(message: Message):
     doc = message.document
@@ -351,10 +343,11 @@ async def handle_ics(message: Message):
 
         for component in cal.walk():
             if component.name == "VEVENT":
-                summary = str(component.get("summary", "Без названия"))
+                summary = str(component.get("summary", "Без названия")).strip()
                 dtstart = component.get("dtstart")
                 if dtstart is None:
                     continue
+
                 event_date = dtstart.dt
                 if hasattr(event_date, "date"):
                     event_date = event_date.date()
@@ -366,15 +359,28 @@ async def handle_ics(message: Message):
             await message.answer("В календаре нет событий на ближайшие 30 дней.")
             return
 
-        events.sort()
-        text = f"📅 Найдено {len(events)} событий на 30 дней:\n\n"
-        for d, s in events[:20]:  # показываем максимум 20
+        # Создаём задачи
+        created = 0
+        for event_date, summary in events:
+            await add_task(
+                user_id=message.from_user.id,
+                student_name="Из календаря",
+                category="meeting",
+                description=summary,
+                due_date=event_date,
+                notes="Импортировано из .ics"
+            )
+            created += 1
+
+        # Показываем результат
+        text = f"✅ Готово! Создано задач: <b>{created}</b>\n\n"
+        text += "Ближайшие события:\n"
+        for d, s in sorted(events)[:15]:
             text += f"• {d.strftime('%d.%m')} — {s}\n"
 
-        if len(events) > 20:
-            text += f"\n...и ещё {len(events)-20}"
+        if len(events) > 15:
+            text += f"\n...и ещё {len(events) - 15}"
 
-        text += "\n\nПока я только показываю события.\nХочешь, чтобы я умел автоматически создавать из них задачи?"
         await message.answer(text, reply_markup=main_menu_kb())
 
     except Exception as e:
