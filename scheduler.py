@@ -2,35 +2,61 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import date
 from aiogram import Bot
-from database.db import get_tasks_by_date, get_active_tasks, get_all_users
+from database.db import get_active_tasks, get_all_users
 from keyboards.inline import CATEGORIES
-from config import MORNING_REMINDER, EVENING_REMINDER
+from config import GOALS_REMINDER, STUDENTS_REMINDER
 import pytz
 
 moscow = pytz.timezone("Europe/Moscow")
 
-async def send_daily_summary(bot: Bot, is_morning: bool = True):
+async def send_goals_reminder(bot: Bot):
+    """11:00 — общие цели / план"""
     users = await get_all_users()
-    title = "🌅 Доброе утро! План на сегодня:" if is_morning else "🌙 Вечерняя сводка. Что осталось на сегодня:"
 
     for user_id in users:
-        tasks = await get_tasks_by_date(user_id, date.today())
+        tasks = await get_active_tasks(user_id)
 
         if not tasks:
-            text = f"{title}\n\nНа сегодня задач нет 🎉"
+            text = "🎯 <b>11:00 — Общие цели</b>\n\nАктивных задач пока нет."
         else:
-            text = f"{title}\n\n"
-            for t in tasks:
+            text = "🎯 <b>11:00 — Общие цели / план</b>\n\n"
+            for t in tasks[:20]:
                 cat = CATEGORIES.get(t["category"], t["category"])
-                text += f"• <b>{t['student_name']}</b> [{cat}]\n  {t['description']}\n\n"
+                due = t["due_date"][8:10] + "." + t["due_date"][5:7]  # ДД.ММ
+                text += f"• <b>{t['student_name']}</b> [{cat}] до {due}\n  {t['description']}\n\n"
 
-        # Просроченные
-        all_active = await get_active_tasks(user_id)
-        overdue = [t for t in all_active if date.fromisoformat(t["due_date"]) < date.today()]
-        if overdue:
-            text += "\n⚠️ <b>Просрочено:</b>\n"
-            for t in overdue:
-                text += f"• {t['student_name']} — {t['description']}\n"
+            if len(tasks) > 20:
+                text += f"...и ещё {len(tasks) - 20} задач"
+
+        try:
+            await bot.send_message(user_id, text)
+        except Exception as e:
+            print(f"Не удалось отправить {user_id}: {e}")
+
+async def send_students_reminder(bot: Bot):
+    """21:00 — задачи по ученикам"""
+    users = await get_all_users()
+
+    for user_id in users:
+        tasks = await get_active_tasks(user_id)
+
+        # Берём только задачи, где указан конкретный ученик (не "Из календаря")
+        student_tasks = [
+            t for t in tasks
+            if t["student_name"].lower() not in ("из календаря", "календарь", "-")
+        ]
+
+        if not student_tasks:
+            text = "👥 <b>21:00 — Задачи по ученикам</b>\n\nСейчас нет активных задач по ученикам."
+        else:
+            text = "👥 <b>21:00 — Задачи по ученикам</b>\n\n"
+            for t in student_tasks[:20]:
+                cat = CATEGORIES.get(t["category"], t["category"])
+                due = t["due_date"][8:10] + "." + t["due_date"][5:7]
+                text += f"• <b>{t['student_name']}</b> [{cat}] до {due}\n  {t['description']}\n\n"
+
+            if len(student_tasks) > 20:
+                text += f"...и ещё {len(student_tasks) - 20} задач"
 
         try:
             await bot.send_message(user_id, text)
@@ -40,18 +66,20 @@ async def send_daily_summary(bot: Bot, is_morning: bool = True):
 def setup_scheduler(bot: Bot):
     scheduler = AsyncIOScheduler(timezone=moscow)
 
-    hour, minute = map(int, MORNING_REMINDER.split(":"))
+    # 11:00 — общие цели
+    hour, minute = map(int, GOALS_REMINDER.split(":"))
     scheduler.add_job(
-        send_daily_summary,
+        send_goals_reminder,
         CronTrigger(hour=hour, minute=minute),
-        args=[bot, True]
+        args=[bot]
     )
 
-    hour, minute = map(int, EVENING_REMINDER.split(":"))
+    # 21:00 — задачи по ученикам
+    hour, minute = map(int, STUDENTS_REMINDER.split(":"))
     scheduler.add_job(
-        send_daily_summary,
+        send_students_reminder,
         CronTrigger(hour=hour, minute=minute),
-        args=[bot, False]
+        args=[bot]
     )
 
     scheduler.start()
