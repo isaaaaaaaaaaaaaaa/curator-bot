@@ -42,7 +42,11 @@ async def show_today(message: Message, user_id: int):
         cat = CATEGORIES.get(t["category"], t["category"])
         text += f"• <b>{t['student_name']}</b> [{cat}]\n  {t['description']}\n\n"
 
-    await message.answer(text, reply_markup=tasks_kb(tasks))
+    # Если текст слишком длинный — режем
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n... (слишком много задач, показана часть)"
+
+    await message.answer(text, reply_markup=tasks_kb(tasks[:30]))  # кнопки тоже ограничиваем
 
 async def show_list(message: Message, user_id: int):
     tasks = await get_active_tasks(user_id)
@@ -56,7 +60,12 @@ async def show_list(message: Message, user_id: int):
         due = datetime.fromisoformat(t["due_date"]).strftime("%d.%m")
         text += f"#{t['id']} • <b>{t['student_name']}</b> [{cat}] до {due}\n  {t['description']}\n\n"
 
-    await message.answer(text, reply_markup=tasks_kb(tasks))
+        # Как только приближаемся к лимиту — останавливаемся
+        if len(text) > 3800:
+            text += f"\n... и ещё {len(tasks) - tasks.index(t) - 1} задач"
+            break
+
+    await message.answer(text, reply_markup=tasks_kb(tasks[:25]))
 
 @router.message(Command("today"))
 async def cmd_today(message: Message):
