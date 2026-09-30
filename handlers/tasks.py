@@ -53,7 +53,7 @@ async def menu_add(callback: CallbackQuery, state: FSMContext):
 async def menu_student(callback: CallbackQuery, state: FSMContext):
     await state.set_state(StudentSearch.waiting_name)
     await callback.message.edit_text(
-        "Введи фамилию студента (можно часть):\n\n"
+        "Введи фамилию Ученика (можно часть):\n\n"
         "Например: Иванов или Ива"
     )
     await callback.answer()
@@ -107,7 +107,7 @@ async def cmd_today(message: Message):
 async def cmd_list(message: Message):
     await show_list(message, message.from_user.id)
 
-# ====================== ПОИСК ПО СТУДЕНТУ ======================
+# ====================== ПОИСК ПО УЧЕНИКУ ======================
 
 @router.message(StudentSearch.waiting_name)
 async def process_student_search(message: Message, state: FSMContext):
@@ -136,14 +136,14 @@ async def cmd_student(message: Message, state: FSMContext):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await state.set_state(StudentSearch.waiting_name)
-        await message.answer("Введи фамилию студента:")
+        await message.answer("Введи фамилию ученика:")
         return
 
     name = args[1].strip()
     tasks = await get_tasks_by_student(message.from_user.id, name)
 
     if not tasks:
-        await message.answer(f"По студенту «{name}» активных задач нет.")
+        await message.answer(f"По ученику «{name}» активных задач нет.")
         return
 
     text = f"👤 <b>Задачи по {name}</b>\n\n"
@@ -166,7 +166,7 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     category = callback.data.split(":")[1]
     await state.update_data(category=category)
     await state.set_state(AddTask.student)
-    await callback.message.edit_text("Введи фамилию (или ФИО) студента:")
+    await callback.message.edit_text("Введи фамилию (или ФИО) ученика:")
     await callback.answer()
 
 @router.message(AddTask.student)
@@ -227,7 +227,7 @@ async def process_notes(message: Message, state: FSMContext):
 
     text = (
         f"<b>Проверь задачу:</b>\n\n"
-        f"Студент: <b>{data['student_name']}</b>\n"
+        f"Ученик: <b>{data['student_name']}</b>\n"
         f"Категория: {cat_name}\n"
         f"Описание: {data['description']}\n"
         f"Дата: {due}\n"
@@ -276,7 +276,7 @@ async def show_task(callback: CallbackQuery):
 
     text = (
         f"<b>Задача #{task['id']}</b>\n\n"
-        f"Студент: <b>{task['student_name']}</b>\n"
+        f"Ученик: <b>{task['student_name']}</b>\n"
         f"Категория: {cat}\n"
         f"Описание: {task['description']}\n"
         f"Дата: {due}\n"
@@ -322,11 +322,12 @@ async def back_to_list(callback: CallbackQuery):
 @router.message(F.document)
 async def handle_ics(message: Message):
     doc = message.document
-    if not doc.file_name.lower().endswith(".ics"):
+    if not doc.file_name or not doc.file_name.lower().endswith(".ics"):
         await message.answer("Нужен файл с расширением .ics")
         return
 
-    # Скачиваем файл
+    status_msg = await message.answer("Читаю календарь...")
+
     file = await message.bot.get_file(doc.file_id)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".ics") as tmp:
         await message.bot.download_file(file.file_path, tmp.name)
@@ -334,6 +335,8 @@ async def handle_ics(message: Message):
 
     try:
         from icalendar import Calendar
+        from datetime import timezone
+
         with open(tmp_path, "rb") as f:
             cal = Calendar.from_ical(f.read())
 
@@ -342,24 +345,37 @@ async def handle_ics(message: Message):
         limit = today + timedelta(days=30)
 
         for component in cal.walk():
-            if component.name == "VEVENT":
-                summary = str(component.get("summary", "Без названия")).strip()
-                dtstart = component.get("dtstart")
-                if dtstart is None:
-                    continue
+            if component.name != "VEVENT":
+                continue
 
-                event_date = dtstart.dt
-                if hasattr(event_date, "date"):
-                    event_date = event_date.date()
+            summary = str(component.get("summary", "Без названия")).strip()
+            dtstart = component.get("dtstart")
+            if not dtstart:
+                continue
 
-                if today <= event_date <= limit:
-                    events.append((event_date, summary))
+            raw = dtstart.dt
+
+            # Приводим к date
+            if isinstance(raw, datetime):
+                if raw.tzinfo is not None:
+                    raw = raw.astimezone(timezone.utc).replace(tzinfo=None)
+                event_date = raw.date()
+            elif isinstance(raw, date):
+                event_date = raw
+            else:
+                continue
+
+            if today <= event_date <= limit:
+                events.append((event_date, summary))
 
         if not events:
-            await message.answer("В календаре нет событий на ближайшие 30 дней.")
+            await status_msg.edit_text("В календаре нет событий на ближайшие 30 дней.")
             return
 
-        # Создаём задачи
+        # Убираем дубликаты
+        events = list(set(events))
+        events.sort()
+
         created = 0
         for event_date, summary in events:
             await add_task(
@@ -372,18 +388,19 @@ async def handle_ics(message: Message):
             )
             created += 1
 
-        # Показываем результат
-        text = f"✅ Готово! Создано задач: <b>{created}</b>\n\n"
+        text = f"✅ Создано задач: <b>{created}</b>\n\n"
         text += "Ближайшие события:\n"
-        for d, s in sorted(events)[:15]:
+        for d, s in events[:15]:
             text += f"• {d.strftime('%d.%m')} — {s}\n"
-
         if len(events) > 15:
             text += f"\n...и ещё {len(events) - 15}"
 
-        await message.answer(text, reply_markup=main_menu_kb())
+        await status_msg.edit_text(text, reply_markup=main_menu_kb())
 
     except Exception as e:
-        await message.answer(f"Ошибка при чтении календаря: {e}")
+        await status_msg.edit_text(f"Ошибка при чтении календаря:\n<code>{e}</code>")
     finally:
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
