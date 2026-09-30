@@ -48,7 +48,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     builder.button(text="📋 Сегодня", callback_data="menu_today")
     builder.button(text="📝 Все задачи", callback_data="menu_list")
     builder.button(text="➕ Добавить задачу", callback_data="menu_add")
-    builder.button(text="👤 По студенту", callback_data="menu_student")
+    builder.button(text="👤 По ученику", callback_data="menu_student")
     builder.button(text="📅 Импорт календаря", callback_data="menu_import")
     builder.adjust(1)
     return builder.as_markup()
