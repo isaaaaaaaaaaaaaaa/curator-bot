@@ -1,86 +1,100 @@
+import html
+import logging
+
+import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from datetime import date
 from aiogram import Bot
+
 from database.db import get_active_tasks, get_all_users
 from keyboards.inline import CATEGORIES
 from config import GOALS_REMINDER, STUDENTS_REMINDER
-import pytz
 
 moscow = pytz.timezone("Europe/Moscow")
+SKIP_NAMES = {"из календаря", "календарь", "-"}
+MAX_LEN = 3800  # запас до лимита телеграма в 4096
+
+
+def fmt_due(due) -> str:
+    # "2026-10-05" -> "05.10"
+    if not due or len(due) < 10:
+        return "?"
+    return f"{due[8:10]}.{due[5:7]}"
+
+
+def build_text(title: str, tasks: list, empty_text: str) -> str:
+    text = f"{title}\n\n"
+    if not tasks:
+        return text + empty_text
+
+    shown = 0
+    for t in tasks:
+        cat = html.escape(str(CATEGORIES.get(t["category"], t["category"])))
+        name = html.escape(t["student_name"] or "-")
+        desc = html.escape(t["description"] or "")
+        line = f"• <b>{name}</b> [{cat}] до {fmt_due(t['due_date'])}\n  {desc}\n\n"
+        if len(text) + len(line) > MAX_LEN:
+            break
+        text += line
+        shown += 1
+
+    if shown < len(tasks):
+        text += f"...и ещё {len(tasks) - shown} задач"
+    return text
+
+
+async def broadcast(bot: Bot, make_text):
+    for user_id in await get_all_users():
+        try:
+            tasks = await get_active_tasks(user_id)
+            await bot.send_message(user_id, make_text(tasks))
+        except Exception:
+            logging.exception("Не удалось отправить напоминание %s", user_id)
+
 
 async def send_goals_reminder(bot: Bot):
     """11:00 — общие цели / план"""
-    users = await get_all_users()
+    await broadcast(bot, lambda tasks: build_text(
+        f"🎯 <b>{GOALS_REMINDER} — Общие цели / план</b>",
+        tasks,
+        "Активных задач пока нет.",
+    ))
 
-    for user_id in users:
-        tasks = await get_active_tasks(user_id)
-
-        if not tasks:
-            text = "🎯 <b>11:00 — Общие цели</b>\n\nАктивных задач пока нет."
-        else:
-            text = "🎯 <b>11:00 — Общие цели / план</b>\n\n"
-            for t in tasks[:20]:
-                cat = CATEGORIES.get(t["category"], t["category"])
-                due = t["due_date"][8:10] + "." + t["due_date"][5:7]  # ДД.ММ
-                text += f"• <b>{t['student_name']}</b> [{cat}] до {due}\n  {t['description']}\n\n"
-
-            if len(tasks) > 20:
-                text += f"...и ещё {len(tasks) - 20} задач"
-
-        try:
-            await bot.send_message(user_id, text)
-        except Exception as e:
-            print(f"Не удалось отправить {user_id}: {e}")
 
 async def send_students_reminder(bot: Bot):
     """21:00 — задачи по ученикам"""
-    users = await get_all_users()
-
-    for user_id in users:
-        tasks = await get_active_tasks(user_id)
-
-        # Берём только задачи, где указан конкретный ученик (не "Из календаря")
+    def make(tasks):
+        # только задачи с конкретным учеником (не "Из календаря")
         student_tasks = [
             t for t in tasks
-            if t["student_name"].lower() not in ("из календаря", "календарь", "-")
+            if (t["student_name"] or "-").lower() not in SKIP_NAMES
         ]
+        return build_text(
+            f"👥 <b>{STUDENTS_REMINDER} — Задачи по ученикам</b>",
+            student_tasks,
+            "Сейчас нет активных задач по ученикам.",
+        )
+    await broadcast(bot, make)
 
-        if not student_tasks:
-            text = "👥 <b>21:00 — Задачи по ученикам</b>\n\nСейчас нет активных задач по ученикам."
-        else:
-            text = "👥 <b>21:00 — Задачи по ученикам</b>\n\n"
-            for t in student_tasks[:20]:
-                cat = CATEGORIES.get(t["category"], t["category"])
-                due = t["due_date"][8:10] + "." + t["due_date"][5:7]
-                text += f"• <b>{t['student_name']}</b> [{cat}] до {due}\n  {t['description']}\n\n"
-
-            if len(student_tasks) > 20:
-                text += f"...и ещё {len(student_tasks) - 20} задач"
-
-        try:
-            await bot.send_message(user_id, text)
-        except Exception as e:
-            print(f"Не удалось отправить {user_id}: {e}")
 
 def setup_scheduler(bot: Bot):
     scheduler = AsyncIOScheduler(timezone=moscow)
 
-    # 11:00 — общие цели
-    hour, minute = map(int, GOALS_REMINDER.split(":"))
-    scheduler.add_job(
-        send_goals_reminder,
-        CronTrigger(hour=hour, minute=minute),
-        args=[bot]
-    )
-
-    # 21:00 — задачи по ученикам
-    hour, minute = map(int, STUDENTS_REMINDER.split(":"))
-    scheduler.add_job(
-        send_students_reminder,
-        CronTrigger(hour=hour, minute=minute),
-        args=[bot]
-    )
+    for job, time_str in (
+        (send_goals_reminder, GOALS_REMINDER),
+        (send_students_reminder, STUDENTS_REMINDER),
+    ):
+        hour, minute = map(int, time_str.split(":"))
+        scheduler.add_job(
+            job,
+            # таймзона именно в триггере, иначе cron считает по UTC
+            CronTrigger(hour=hour, minute=minute, timezone=moscow),
+            args=[bot],
+        )
 
     scheduler.start()
+
+    for j in scheduler.get_jobs():
+        logging.info("Джоба %s, следующий запуск: %s", j.func.__name__, j.next_run_time)
+
     return scheduler
