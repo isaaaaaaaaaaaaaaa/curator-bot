@@ -4,7 +4,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 
 from database.db import add_user
-from keyboards.inline import main_menu_kb
+from keyboards.inline import main_menu_kb, categories_kb
 from handlers.tasks import (
     show_today, show_list, AddTask, StudentSearch
 )
@@ -45,7 +45,7 @@ async def menu_list(callback: CallbackQuery):
 @router.callback_query(F.data == "menu_add")
 async def menu_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddTask.category)
-    await callback.message.edit_text("Выбери категорию:", reply_markup=__import__('keyboards.inline', fromlist=['categories_kb']).categories_kb())
+    await callback.message.edit_text("Выбери категорию:", reply_markup=categories_kb())
     await callback.answer()
 
 @router.callback_query(F.data == "menu_student")
