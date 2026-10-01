@@ -3,10 +3,10 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 
-from database.db import add_user
-from keyboards.inline import main_menu_kb, categories_kb
+from database.db import add_user, count_calendar_tasks, delete_calendar_tasks
+from keyboards.inline import main_menu_kb, categories_kb, clear_calendar_kb
 from handlers.tasks import (
-    show_today, show_list, AddTask, StudentSearch
+    show_today, show_list, AddTask, StudentSearch, DayPick, DAY_PROMPT
 )
 
 router = Router()
@@ -53,6 +53,37 @@ async def menu_student(callback: CallbackQuery, state: FSMContext):
     await state.set_state(StudentSearch.waiting_name)
     await callback.message.edit_text(
         "Введи фамилию ученика (можно часть):\n\nПример: Иванов или Ива"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "menu_day")
+async def menu_day(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(DayPick.waiting_date)
+    await callback.message.edit_text(DAY_PROMPT)
+    await callback.answer()
+
+@router.callback_query(F.data == "menu_clear_calendar")
+async def menu_clear_calendar(callback: CallbackQuery):
+    count = await count_calendar_tasks(callback.from_user.id)
+    if count == 0:
+        await callback.message.edit_text(
+            "Задач из календаря нет, чистить нечего.",
+            reply_markup=main_menu_kb()
+        )
+    else:
+        await callback.message.edit_text(
+            f"Удалить все задачи из календаря ({count})?\n\n"
+            "Удалятся и выполненные. Задачи, которые ты добавлял вручную, не тронутся.",
+            reply_markup=clear_calendar_kb()
+        )
+    await callback.answer()
+
+@router.callback_query(F.data == "clear_calendar_yes")
+async def clear_calendar_yes(callback: CallbackQuery):
+    deleted = await delete_calendar_tasks(callback.from_user.id)
+    await callback.message.edit_text(
+        f"🗑 Удалено задач из календаря: {deleted}",
+        reply_markup=main_menu_kb()
     )
     await callback.answer()
 
