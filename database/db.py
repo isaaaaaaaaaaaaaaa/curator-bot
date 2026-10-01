@@ -1,11 +1,15 @@
+import os
 import aiosqlite
 from datetime import date, datetime
 from typing import List, Optional
 from pathlib import Path
 
-DB_PATH = Path("curator.db")
+# На Railway поставь переменную DB_PATH=/data/curator.db (путь внутри Volume)
+DB_PATH = Path(os.getenv("DB_PATH", "curator.db"))
+
 
 async def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         # Пользователи
         await db.execute("""
@@ -34,6 +38,7 @@ async def init_db():
         """)
         await db.commit()
 
+
 async def add_user(user_id: int, full_name: str = None, username: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -45,11 +50,13 @@ async def add_user(user_id: int, full_name: str = None, username: str = None):
         )
         await db.commit()
 
+
 async def get_all_users() -> List[int]:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT user_id FROM users")
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
+
 
 async def add_task(
     user_id: int,
@@ -71,6 +78,21 @@ async def add_task(
         await db.commit()
         return cursor.lastrowid
 
+
+async def task_exists(user_id: int, student_name: str, description: str, due_date: date) -> bool:
+    """Есть ли уже такая задача (в том числе выполненная). Нужно, чтобы импорт .ics не плодил дубли."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT 1 FROM tasks
+            WHERE user_id = ? AND student_name = ? AND description = ? AND due_date = ?
+            LIMIT 1
+            """,
+            (user_id, student_name, description, due_date.isoformat())
+        )
+        return await cursor.fetchone() is not None
+
+
 async def get_tasks_by_date(user_id: int, target_date: date, only_active: bool = True) -> List[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -82,6 +104,7 @@ async def get_tasks_by_date(user_id: int, target_date: date, only_active: bool =
         cursor = await db.execute(query, (user_id, target_date.isoformat()))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
 
 async def get_active_tasks(user_id: int) -> List[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -97,19 +120,15 @@ async def get_active_tasks(user_id: int) -> List[dict]:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+
 async def get_tasks_by_student(user_id: int, name: str) -> List[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT * FROM tasks
-            WHERE user_id = ? AND student_name LIKE ? AND is_done = 0
-            ORDER BY due_date
-            """,
-            (user_id, f"%{name}%")
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+    # SQLite LIKE не игнорирует регистр для кириллицы ("иванов" не найдёт "Иванов"),
+    # поэтому фильтруем в Python через casefold()
+    needle = name.strip().casefold()
+    tasks = await get_active_tasks(user_id)
+    found = [t for t in tasks if needle in (t["student_name"] or "").casefold()]
+    return sorted(found, key=lambda t: t["due_date"])
+
 
 async def mark_done(user_id: int, task_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -120,6 +139,7 @@ async def mark_done(user_id: int, task_id: int) -> bool:
         await db.commit()
         return cursor.rowcount > 0
 
+
 async def get_task(user_id: int, task_id: int) -> Optional[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -129,6 +149,7 @@ async def get_task(user_id: int, task_id: int) -> Optional[dict]:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
 
 async def delete_task(user_id: int, task_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
