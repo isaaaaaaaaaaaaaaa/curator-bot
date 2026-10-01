@@ -78,3 +78,16 @@ def clear_calendar_kb() -> InlineKeyboardMarkup:
     builder.button(text="❌ Отмена", callback_data="cancel")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def cancel_kb() -> InlineKeyboardMarkup:
+    """Кнопка под вопросами, где бот ждёт текст (фамилию, дату)."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel")
+    return builder.as_markup()
+
+
+def back_menu_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад", callback_data="back_to_menu")
+    return builder.as_markup()
