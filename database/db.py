@@ -159,3 +159,24 @@ async def delete_task(user_id: int, task_id: int) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def count_calendar_tasks(user_id: int) -> int:
+    """Сколько задач создано импортом календаря (включая выполненные и старые 'meeting')."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM tasks WHERE user_id = ? AND category IN ('calendar', 'meeting')",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+
+async def delete_calendar_tasks(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM tasks WHERE user_id = ? AND category IN ('calendar', 'meeting')",
+            (user_id,)
+        )
+        await db.commit()
+        return cursor.rowcount
