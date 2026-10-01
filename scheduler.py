@@ -31,8 +31,9 @@ def build_text(title: str, tasks: list, empty_text: str) -> str:
     for t in tasks:
         cat = html.escape(str(CATEGORIES.get(t["category"], t["category"])))
         name = html.escape(t["student_name"] or "-")
-        desc = html.escape(t["description"] or "")
-        line = f"• <b>{name}</b> [{cat}] до {fmt_due(t['due_date'])}\n  {desc}\n\n"
+        desc = (t["description"] or "").strip()
+        tail = f"\n  {html.escape(desc)}\n\n" if desc else "\n"
+        line = f"• <b>{name}</b> [{cat}] до {fmt_due(t['due_date'])}{tail}"
         if len(text) + len(line) > MAX_LEN:
             break
         text += line
