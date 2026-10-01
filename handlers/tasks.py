@@ -1,15 +1,18 @@
+import html
+import logging
+from datetime import date, datetime, timedelta
+from typing import List
+
+import pytz
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ContentType
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from datetime import date, datetime, timedelta
-import tempfile
-import os
 
 from database.db import (
     add_task, get_tasks_by_date, get_active_tasks,
-    get_tasks_by_student, mark_done, get_task, delete_task
+    get_tasks_by_student, mark_done, get_task, delete_task, task_exists
 )
 from keyboards.inline import (
     categories_kb, confirm_kb, tasks_kb, task_actions_kb,
@@ -17,6 +20,13 @@ from keyboards.inline import (
 )
 
 router = Router()
+
+MSK = pytz.timezone("Europe/Moscow")
+MAX_LEN = 3800  # запас до лимита телеграма в 4096
+
+# Обычный текст, не команда (чтобы /add и т.п. не съедались как "фамилия ученика")
+TEXT = F.text & ~F.text.startswith("/")
+
 
 class AddTask(StatesGroup):
     category = State()
@@ -26,27 +36,60 @@ class AddTask(StatesGroup):
     notes = State()
     confirm = State()
 
+
 class StudentSearch(StatesGroup):
     waiting_name = State()
+
+
+# ====================== ХЕЛПЕРЫ ======================
+
+def today_msk() -> date:
+    # Railway живёт по UTC, поэтому date.today() ночью (00:00-03:00 МСК) даёт вчерашнюю дату
+    return datetime.now(MSK).date()
+
+
+def esc(value) -> str:
+    """Экранируем пользовательский текст, потому что бот в ParseMode.HTML."""
+    return html.escape(str(value)) if value is not None else ""
+
+
+def cat_name(task: dict) -> str:
+    return str(CATEGORIES.get(task["category"], task["category"]))
+
+
+def fmt_date(iso, fmt: str = "%d.%m") -> str:
+    try:
+        return datetime.fromisoformat(iso).strftime(fmt)
+    except (TypeError, ValueError):
+        return "?"
+
+
+def limited(head: str, lines: List[str]) -> str:
+    """Склеивает строки, пока влезает в лимит телеграма, и пишет сколько не поместилось."""
+    text = head
+    for i, line in enumerate(lines):
+        if len(text) + len(line) > MAX_LEN:
+            return text + f"...и ещё {len(lines) - i}"
+        text += line
+    return text
+
 
 # ====================== СЕГОДНЯ / СПИСОК ======================
 
 async def show_today(message: Message, user_id: int):
-    tasks = await get_tasks_by_date(user_id, date.today())
+    today = today_msk()
+    tasks = await get_tasks_by_date(user_id, today)
     if not tasks:
         await message.answer("На сегодня задач нет 🎉", reply_markup=main_menu_kb())
         return
 
-    text = f"📋 <b>План на сегодня ({date.today().strftime('%d.%m.%Y')})</b>\n\n"
-    for t in tasks:
-        cat = CATEGORIES.get(t["category"], t["category"])
-        text += f"• <b>{t['student_name']}</b> [{cat}]\n  {t['description']}\n\n"
+    lines = [
+        f"• <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]\n  {esc(t['description'])}\n\n"
+        for t in tasks
+    ]
+    text = limited(f"📋 <b>План на сегодня ({today.strftime('%d.%m.%Y')})</b>\n\n", lines)
+    await message.answer(text, reply_markup=tasks_kb(tasks[:30]))
 
-    # Если текст слишком длинный — режем
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n... (слишком много задач, показана часть)"
-
-    await message.answer(text, reply_markup=tasks_kb(tasks[:30]))  # кнопки тоже ограничиваем
 
 async def show_list(message: Message, user_id: int):
     tasks = await get_active_tasks(user_id)
@@ -54,73 +97,67 @@ async def show_list(message: Message, user_id: int):
         await message.answer("Активных задач нет.", reply_markup=main_menu_kb())
         return
 
-    text = "📋 <b>Все активные задачи</b>\n\n"
-    for t in tasks:
-        cat = CATEGORIES.get(t["category"], t["category"])
-        due = datetime.fromisoformat(t["due_date"]).strftime("%d.%m")
-        text += f"#{t['id']} • <b>{t['student_name']}</b> [{cat}] до {due}\n  {t['description']}\n\n"
-
-        # Как только приближаемся к лимиту — останавливаемся
-        if len(text) > 3800:
-            text += f"\n... и ещё {len(tasks) - tasks.index(t) - 1} задач"
-            break
-
+    lines = [
+        f"#{t['id']} • <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}] "
+        f"до {fmt_date(t['due_date'])}\n  {esc(t['description'])}\n\n"
+        for t in tasks
+    ]
+    text = limited("📋 <b>Все активные задачи</b>\n\n", lines)
     await message.answer(text, reply_markup=tasks_kb(tasks[:25]))
+
 
 @router.message(Command("today"))
 async def cmd_today(message: Message):
     await show_today(message, message.from_user.id)
 
+
 @router.message(Command("list"))
 async def cmd_list(message: Message):
     await show_list(message, message.from_user.id)
 
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменил.", reply_markup=main_menu_kb())
+
+
 # ====================== ПОИСК ПО УЧЕНИКУ ======================
 
-@router.message(StudentSearch.waiting_name)
-async def process_student_search(message: Message, state: FSMContext):
-    name = message.text.strip()
+async def show_student(message: Message, name: str):
     tasks = await get_tasks_by_student(message.from_user.id, name)
-
     if not tasks:
         await message.answer(
-            f"По запросу «{name}» активных задач нет.",
+            f"По запросу «{esc(name)}» активных задач нет.",
             reply_markup=main_menu_kb()
         )
-        await state.clear()
         return
 
-    text = f"👤 <b>Задачи по «{name}»</b>\n\n"
-    for t in tasks:
-        cat = CATEGORIES.get(t["category"], t["category"])
-        due = datetime.fromisoformat(t["due_date"]).strftime("%d.%m")
-        text += f"#{t['id']} [{cat}] до {due}\n  {t['description']}\n\n"
+    lines = [
+        f"#{t['id']} [{esc(cat_name(t))}] до {fmt_date(t['due_date'])}\n  {esc(t['description'])}\n\n"
+        for t in tasks
+    ]
+    text = limited(f"👤 <b>Задачи по «{esc(name)}»</b>\n\n", lines)
+    await message.answer(text, reply_markup=tasks_kb(tasks[:25]))
 
-    await message.answer(text, reply_markup=tasks_kb(tasks))
-    await state.clear()
 
 @router.message(Command("student"))
 async def cmd_student(message: Message, state: FSMContext):
-    args = message.text.split(maxsplit=1)
+    args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
         await state.set_state(StudentSearch.waiting_name)
         await message.answer("Введи фамилию ученика:")
         return
 
-    name = args[1].strip()
-    tasks = await get_tasks_by_student(message.from_user.id, name)
+    await state.clear()
+    await show_student(message, args[1].strip())
 
-    if not tasks:
-        await message.answer(f"По ученику «{name}» активных задач нет.")
-        return
 
-    text = f"👤 <b>Задачи по {name}</b>\n\n"
-    for t in tasks:
-        cat = CATEGORIES.get(t["category"], t["category"])
-        due = datetime.fromisoformat(t["due_date"]).strftime("%d.%m")
-        text += f"#{t['id']} [{cat}] до {due}\n  {t['description']}\n\n"
+@router.message(StudentSearch.waiting_name, TEXT)
+async def process_student_search(message: Message, state: FSMContext):
+    await state.clear()
+    await show_student(message, message.text.strip())
 
-    await message.answer(text, reply_markup=tasks_kb(tasks))
 
 # ====================== ДОБАВЛЕНИЕ ЗАДАЧИ ======================
 
@@ -128,6 +165,7 @@ async def cmd_student(message: Message, state: FSMContext):
 async def cmd_add(message: Message, state: FSMContext):
     await state.set_state(AddTask.category)
     await message.answer("Выбери категорию:", reply_markup=categories_kb())
+
 
 @router.callback_query(AddTask.category, F.data.startswith("cat:"))
 async def process_category(callback: CallbackQuery, state: FSMContext):
@@ -137,13 +175,15 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введи фамилию (или ФИО) ученика:")
     await callback.answer()
 
-@router.message(AddTask.student)
+
+@router.message(AddTask.student, TEXT)
 async def process_student(message: Message, state: FSMContext):
     await state.update_data(student_name=message.text.strip())
     await state.set_state(AddTask.description)
     await message.answer("Кратко опиши задачу:")
 
-@router.message(AddTask.description)
+
+@router.message(AddTask.description, TEXT)
 async def process_description(message: Message, state: FSMContext):
     await state.update_data(description=message.text.strip())
     await state.set_state(AddTask.due_date)
@@ -152,10 +192,11 @@ async def process_description(message: Message, state: FSMContext):
         "Можно: сегодня, завтра, +3"
     )
 
-@router.message(AddTask.due_date)
+
+@router.message(AddTask.due_date, TEXT)
 async def process_due_date(message: Message, state: FSMContext):
     text = message.text.strip().lower()
-    today = date.today()
+    today = today_msk()
 
     try:
         if text == "сегодня":
@@ -182,7 +223,8 @@ async def process_due_date(message: Message, state: FSMContext):
     await state.set_state(AddTask.notes)
     await message.answer("Дополнительные заметки (или «-» если нет):")
 
-@router.message(AddTask.notes)
+
+@router.message(AddTask.notes, TEXT)
 async def process_notes(message: Message, state: FSMContext):
     notes = message.text.strip()
     if notes == "-":
@@ -190,19 +232,19 @@ async def process_notes(message: Message, state: FSMContext):
     await state.update_data(notes=notes)
 
     data = await state.get_data()
-    cat_name = CATEGORIES.get(data["category"], data["category"])
-    due = datetime.fromisoformat(data["due_date"]).strftime("%d.%m.%Y")
+    cat = esc(CATEGORIES.get(data["category"], data["category"]))
 
     text = (
         f"<b>Проверь задачу:</b>\n\n"
-        f"Ученик: <b>{data['student_name']}</b>\n"
-        f"Категория: {cat_name}\n"
-        f"Описание: {data['description']}\n"
-        f"Дата: {due}\n"
-        f"Заметки: {notes or '—'}"
+        f"Ученик: <b>{esc(data['student_name'])}</b>\n"
+        f"Категория: {cat}\n"
+        f"Описание: {esc(data['description'])}\n"
+        f"Дата: {fmt_date(data['due_date'], '%d.%m.%Y')}\n"
+        f"Заметки: {esc(notes) or '—'}"
     )
     await state.set_state(AddTask.confirm)
     await message.answer(text, reply_markup=confirm_kb())
+
 
 @router.callback_query(AddTask.confirm, F.data == "save_task")
 async def save_task(callback: CallbackQuery, state: FSMContext):
@@ -222,11 +264,13 @@ async def save_task(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
 @router.callback_query(F.data == "back_to_notes")
 async def back_to_notes(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddTask.notes)
     await callback.message.edit_text("Дополнительные заметки (или «-» если нет):")
     await callback.answer()
+
 
 # ====================== ДЕЙСТВИЯ С ЗАДАЧЕЙ ======================
 
@@ -238,52 +282,56 @@ async def show_task(callback: CallbackQuery):
         await callback.answer("Задача не найдена", show_alert=True)
         return
 
-    cat = CATEGORIES.get(task["category"], task["category"])
-    due = datetime.fromisoformat(task["due_date"]).strftime("%d.%m.%Y")
     status = "✅ Выполнено" if task["is_done"] else "⬜ Активна"
 
     text = (
         f"<b>Задача #{task['id']}</b>\n\n"
-        f"Ученик: <b>{task['student_name']}</b>\n"
-        f"Категория: {cat}\n"
-        f"Описание: {task['description']}\n"
-        f"Дата: {due}\n"
+        f"Ученик: <b>{esc(task['student_name'])}</b>\n"
+        f"Категория: {esc(cat_name(task))}\n"
+        f"Описание: {esc(task['description'])}\n"
+        f"Дата: {fmt_date(task['due_date'], '%d.%m.%Y')}\n"
         f"Статус: {status}\n"
-        f"Заметки: {task['notes'] or '—'}"
+        f"Заметки: {esc(task['notes']) or '—'}"
     )
     await callback.message.edit_text(text, reply_markup=task_actions_kb(task_id))
     await callback.answer()
+
 
 @router.callback_query(F.data.startswith("done:"))
 async def done_callback(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
     ok = await mark_done(callback.from_user.id, task_id)
-    if ok:
-        await callback.message.edit_text(
-            f"✅ Задача #{task_id} выполнена.",
-            reply_markup=main_menu_kb()
-        )
-    else:
+    if not ok:
         await callback.answer("Задача не найдена", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"✅ Задача #{task_id} выполнена.",
+        reply_markup=main_menu_kb()
+    )
     await callback.answer()
+
 
 @router.callback_query(F.data.startswith("delete:"))
 async def delete_callback(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
     ok = await delete_task(callback.from_user.id, task_id)
-    if ok:
-        await callback.message.edit_text(
-            f"🗑 Задача #{task_id} удалена.",
-            reply_markup=main_menu_kb()
-        )
-    else:
+    if not ok:
         await callback.answer("Задача не найдена", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"🗑 Задача #{task_id} удалена.",
+        reply_markup=main_menu_kb()
+    )
     await callback.answer()
+
 
 @router.callback_query(F.data == "back_to_list")
 async def back_to_list(callback: CallbackQuery):
     await show_list(callback.message, callback.from_user.id)
     await callback.answer()
+
 
 # ====================== ИМПОРТ .ICS ======================
 
@@ -293,24 +341,21 @@ async def handle_ics(message: Message):
     if not doc.file_name or not doc.file_name.lower().endswith(".ics"):
         await message.answer("Нужен файл с расширением .ics")
         return
+    if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+        await message.answer("Файл слишком большой (больше 5 МБ).")
+        return
 
     status_msg = await message.answer("Читаю календарь...")
 
-    file = await message.bot.get_file(doc.file_id)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".ics") as tmp:
-        await message.bot.download_file(file.file_path, tmp.name)
-        tmp_path = tmp.name
-
     try:
-        from icalendar import Calendar
-        from datetime import timezone
+        from icalendar import Calendar  # должен быть в requirements.txt
 
-        with open(tmp_path, "rb") as f:
-            cal = Calendar.from_ical(f.read())
+        buf = await message.bot.download(doc)
+        cal = Calendar.from_ical(buf.read())
 
-        events = []
-        today = date.today()
+        today = today_msk()
         limit = today + timedelta(days=30)
+        found = set()  # set сразу убирает дубли внутри файла
 
         for component in cal.walk():
             if component.name != "VEVENT":
@@ -323,10 +368,11 @@ async def handle_ics(message: Message):
 
             raw = dtstart.dt
 
-            # Приводим к date
+            # Приводим к дате. Время с таймзоной переводим в Москву,
+            # иначе событие в 01:00 МСК уехало бы на предыдущий день
             if isinstance(raw, datetime):
                 if raw.tzinfo is not None:
-                    raw = raw.astimezone(timezone.utc).replace(tzinfo=None)
+                    raw = raw.astimezone(MSK)
                 event_date = raw.date()
             elif isinstance(raw, date):
                 event_date = raw
@@ -334,18 +380,18 @@ async def handle_ics(message: Message):
                 continue
 
             if today <= event_date <= limit:
-                events.append((event_date, summary))
+                found.add((event_date, summary))
 
+        events = sorted(found)
         if not events:
             await status_msg.edit_text("В календаре нет событий на ближайшие 30 дней.")
             return
 
-        # Убираем дубликаты
-        events = list(set(events))
-        events.sort()
-
         created = 0
         for event_date, summary in events:
+            # не создаём повторно то, что уже импортировали раньше
+            if await task_exists(message.from_user.id, "Из календаря", summary, event_date):
+                continue
             await add_task(
                 user_id=message.from_user.id,
                 student_name="Из календаря",
@@ -356,19 +402,18 @@ async def handle_ics(message: Message):
             )
             created += 1
 
-        text = f"✅ Создано задач: <b>{created}</b>\n\n"
-        text += "Ближайшие события:\n"
+        skipped = len(events) - created
+        text = f"✅ Создано задач: <b>{created}</b>\n"
+        if skipped:
+            text += f"Уже были в базе: {skipped}\n"
+        text += "\nБлижайшие события:\n"
         for d, s in events[:15]:
-            text += f"• {d.strftime('%d.%m')} — {s}\n"
+            text += f"• {d.strftime('%d.%m')} — {esc(s)}\n"
         if len(events) > 15:
             text += f"\n...и ещё {len(events) - 15}"
 
         await status_msg.edit_text(text, reply_markup=main_menu_kb())
 
     except Exception as e:
-        await status_msg.edit_text(f"Ошибка при чтении календаря:\n<code>{e}</code>")
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+        logging.exception("Ошибка импорта .ics")
+        await status_msg.edit_text(f"Ошибка при чтении календаря:\n<code>{esc(e)}</code>")
