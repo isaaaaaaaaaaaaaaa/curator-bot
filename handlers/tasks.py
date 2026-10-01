@@ -251,9 +251,8 @@ async def save_task(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data == "back_to_notes")
+@router.callback_query(F.data == "back_to_date")
 async def back_to_date(callback: CallbackQuery, state: FSMContext):
-    # callback_data "back_to_notes" оставил как есть, чтобы не трогать клавиатуры
     await state.set_state(AddTask.due_date)
     await callback.message.edit_text(DATE_PROMPT)
     await callback.answer()
@@ -384,7 +383,7 @@ async def handle_ics(message: Message):
             await add_task(
                 user_id=message.from_user.id,
                 student_name="Из календаря",
-                category="meeting",
+                category="calendar",
                 description=summary,
                 due_date=event_date,
                 notes="Импортировано из .ics"
