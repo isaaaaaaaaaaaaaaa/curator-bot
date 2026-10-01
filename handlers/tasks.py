@@ -27,11 +27,15 @@ MAX_LEN = 3800  # запас до лимита телеграма в 4096
 # Обычный текст, не команда (чтобы /add и т.п. не съедались как "фамилия ученика")
 TEXT = F.text & ~F.text.startswith("/")
 
+DATE_PROMPT = (
+    "Дата (ДД.ММ или ДД.ММ.ГГГГ).\n"
+    "Можно: сегодня, завтра, +3"
+)
+
 
 class AddTask(StatesGroup):
     category = State()
     student = State()
-    description = State()
     due_date = State()
     confirm = State()
 
@@ -54,6 +58,12 @@ def esc(value) -> str:
 
 def cat_name(task: dict) -> str:
     return str(CATEGORIES.get(task["category"], task["category"]))
+
+
+def desc_part(task: dict) -> str:
+    """Описание показываем, только если оно есть (у новых задач его нет, у старых и из .ics есть)."""
+    d = (task.get("description") or "").strip()
+    return f"\n  {esc(d)}\n\n" if d else "\n"
 
 
 def fmt_date(iso, fmt: str = "%d.%m") -> str:
@@ -83,7 +93,7 @@ async def show_today(message: Message, user_id: int):
         return
 
     lines = [
-        f"• <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]\n  {esc(t['description'])}\n\n"
+        f"• <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]{desc_part(t)}"
         for t in tasks
     ]
     text = limited(f"📋 <b>План на сегодня ({today.strftime('%d.%m.%Y')})</b>\n\n", lines)
@@ -98,7 +108,7 @@ async def show_list(message: Message, user_id: int):
 
     lines = [
         f"#{t['id']} • <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}] "
-        f"до {fmt_date(t['due_date'])}\n  {esc(t['description'])}\n\n"
+        f"до {fmt_date(t['due_date'])}{desc_part(t)}"
         for t in tasks
     ]
     text = limited("📋 <b>Все активные задачи</b>\n\n", lines)
@@ -133,7 +143,7 @@ async def show_student(message: Message, name: str):
         return
 
     lines = [
-        f"#{t['id']} [{esc(cat_name(t))}] до {fmt_date(t['due_date'])}\n  {esc(t['description'])}\n\n"
+        f"#{t['id']} [{esc(cat_name(t))}] до {fmt_date(t['due_date'])}{desc_part(t)}"
         for t in tasks
     ]
     text = limited(f"👤 <b>Задачи по «{esc(name)}»</b>\n\n", lines)
@@ -178,18 +188,8 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
 @router.message(AddTask.student, TEXT)
 async def process_student(message: Message, state: FSMContext):
     await state.update_data(student_name=message.text.strip())
-    await state.set_state(AddTask.description)
-    await message.answer("Кратко опиши задачу:")
-
-
-@router.message(AddTask.description, TEXT)
-async def process_description(message: Message, state: FSMContext):
-    await state.update_data(description=message.text.strip())
     await state.set_state(AddTask.due_date)
-    await message.answer(
-        "Дата (ДД.ММ или ДД.ММ.ГГГГ).\n"
-        "Можно: сегодня, завтра, +3"
-    )
+    await message.answer(DATE_PROMPT)
 
 
 @router.message(AddTask.due_date, TEXT)
@@ -226,7 +226,6 @@ async def process_due_date(message: Message, state: FSMContext):
         f"<b>Проверь задачу:</b>\n\n"
         f"Ученик: <b>{esc(data['student_name'])}</b>\n"
         f"Категория: {cat}\n"
-        f"Задача: {esc(data['description'])}\n"
         f"Дата: {fmt_date(data['due_date'], '%d.%m.%Y')}"
     )
     await state.set_state(AddTask.confirm)
@@ -240,9 +239,9 @@ async def save_task(callback: CallbackQuery, state: FSMContext):
         user_id=callback.from_user.id,
         student_name=data["student_name"],
         category=data["category"],
-        description=data["description"],
+        description="",  # колонка NOT NULL, поэтому пустая строка
         due_date=date.fromisoformat(data["due_date"]),
-        notes=data.get("notes")
+        notes=None
     )
     await state.clear()
     await callback.message.edit_text(
@@ -256,10 +255,7 @@ async def save_task(callback: CallbackQuery, state: FSMContext):
 async def back_to_date(callback: CallbackQuery, state: FSMContext):
     # callback_data "back_to_notes" оставил как есть, чтобы не трогать клавиатуры
     await state.set_state(AddTask.due_date)
-    await callback.message.edit_text(
-        "Дата (ДД.ММ или ДД.ММ.ГГГГ).\n"
-        "Можно: сегодня, завтра, +3"
-    )
+    await callback.message.edit_text(DATE_PROMPT)
     await callback.answer()
 
 
@@ -279,10 +275,11 @@ async def show_task(callback: CallbackQuery):
         f"<b>Задача #{task['id']}</b>\n\n"
         f"Ученик: <b>{esc(task['student_name'])}</b>\n"
         f"Категория: {esc(cat_name(task))}\n"
-        f"Описание: {esc(task['description'])}\n"
         f"Дата: {fmt_date(task['due_date'], '%d.%m.%Y')}\n"
         f"Статус: {status}"
     )
+    if (task["description"] or "").strip():
+        text += f"\nОписание: {esc(task['description'])}"
     if task["notes"]:
         text += f"\nЗаметки: {esc(task['notes'])}"
     await callback.message.edit_text(text, reply_markup=task_actions_kb(task_id))
