@@ -16,8 +16,9 @@ from database.db import (
 )
 from keyboards.inline import (
     categories_kb, confirm_kb, tasks_kb, task_actions_kb,
-    main_menu_kb, CATEGORIES
+    main_menu_kb, cancel_kb, CATEGORIES
 )
+from ui import render, Event
 
 router = Router()
 
@@ -30,6 +31,11 @@ TEXT = F.text & ~F.text.startswith("/")
 DATE_PROMPT = (
     "Дата (ДД.ММ или ДД.ММ.ГГГГ).\n"
     "Можно: сегодня, завтра, +3"
+)
+
+DAY_PROMPT = (
+    "Какой день показать?\n"
+    "ДД.ММ или ДД.ММ.ГГГГ. Можно: сегодня, завтра, вчера, +3"
 )
 
 
@@ -114,14 +120,15 @@ def limited(head: str, lines: List[str]) -> str:
     return text
 
 
-# ====================== СЕГОДНЯ / СПИСОК ======================
+# ====================== СЕГОДНЯ / ДЕНЬ / СПИСОК ======================
+# event: Message или CallbackQuery. Экран всегда показывается в одном сообщении-панели.
 
-async def show_day(message: Message, user_id: int, day: date):
+async def show_day(event: Event, day: date):
     is_today = day == today_msk()
-    tasks = await get_tasks_by_date(user_id, day)
+    tasks = await get_tasks_by_date(event.from_user.id, day)
     if not tasks:
         empty = "На сегодня задач нет 🎉" if is_today else f"На {day.strftime('%d.%m.%Y')} задач нет 🎉"
-        await message.answer(empty, reply_markup=main_menu_kb())
+        await render(event, empty, main_menu_kb())
         return
 
     lines = [
@@ -130,17 +137,17 @@ async def show_day(message: Message, user_id: int, day: date):
     ]
     title = "План на сегодня" if is_today else "План на"
     text = limited(f"📋 <b>{title} ({day.strftime('%d.%m.%Y')})</b>\n\n", lines)
-    await message.answer(text, reply_markup=tasks_kb(tasks[:30]))
+    await render(event, text, tasks_kb(tasks[:30]))
 
 
-async def show_today(message: Message, user_id: int):
-    await show_day(message, user_id, today_msk())
+async def show_today(event: Event):
+    await show_day(event, today_msk())
 
 
-async def show_list(message: Message, user_id: int):
-    tasks = await get_active_tasks(user_id)
+async def show_list(event: Event):
+    tasks = await get_active_tasks(event.from_user.id)
     if not tasks:
-        await message.answer("Активных задач нет.", reply_markup=main_menu_kb())
+        await render(event, "Активных задач нет.", main_menu_kb())
         return
 
     lines = [
@@ -149,67 +156,65 @@ async def show_list(message: Message, user_id: int):
         for t in tasks
     ]
     text = limited("📋 <b>Все активные задачи</b>\n\n", lines)
-    await message.answer(text, reply_markup=tasks_kb(tasks[:25]))
+    await render(event, text, tasks_kb(tasks[:25]))
 
 
 @router.message(Command("today"))
-async def cmd_today(message: Message):
-    await show_today(message, message.from_user.id)
+async def cmd_today(message: Message, state: FSMContext):
+    await state.clear()
+    await show_today(message)
 
 
 @router.message(Command("list"))
-async def cmd_list(message: Message):
-    await show_list(message, message.from_user.id)
+async def cmd_list(message: Message, state: FSMContext):
+    await state.clear()
+    await show_list(message)
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Отменил.", reply_markup=main_menu_kb())
+    await render(message, "Отменил.\n\nМеню:", main_menu_kb())
 
 
 # ====================== КОНКРЕТНЫЙ ДЕНЬ ======================
-
-DAY_PROMPT = (
-    "Какой день показать?\n"
-    "ДД.ММ или ДД.ММ.ГГГГ. Можно: сегодня, завтра, вчера, +3"
-)
-
 
 @router.message(Command("day"))
 async def cmd_day(message: Message, state: FSMContext):
     args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
         await state.set_state(DayPick.waiting_date)
-        await message.answer(DAY_PROMPT)
+        await render(message, DAY_PROMPT, cancel_kb())
         return
 
     day = parse_date(args[1], for_view=True)
     if day is None:
-        await message.answer("Не понял дату. Пример: /day 15.10")
+        await state.set_state(DayPick.waiting_date)
+        await render(message, "Не понял дату. Пример: 15.10 или завтра\n\n" + DAY_PROMPT, cancel_kb())
         return
     await state.clear()
-    await show_day(message, message.from_user.id, day)
+    await show_day(message, day)
 
 
 @router.message(DayPick.waiting_date, TEXT)
 async def process_day(message: Message, state: FSMContext):
     day = parse_date(message.text, for_view=True)
     if day is None:
-        await message.answer("Не понял дату. Пример: 15.10 или завтра")
+        await render(message, "Не понял дату. Пример: 15.10 или завтра\n\n" + DAY_PROMPT, cancel_kb())
         return
     await state.clear()
-    await show_day(message, message.from_user.id, day)
+    await show_day(message, day)
 
 
 # ====================== ПОИСК ПО УЧЕНИКУ ======================
 
-async def show_student(message: Message, name: str):
-    tasks = await get_tasks_by_student(message.from_user.id, name)
+async def show_student(event: Event, name: str):
+    tasks = await get_tasks_by_student(event.from_user.id, name)
     if not tasks:
-        await message.answer(
+        await render(
+            event,
             f"По запросу «{esc(name)}» активных задач нет.",
-            reply_markup=main_menu_kb()
+            main_menu_kb()
         )
         return
 
@@ -218,7 +223,7 @@ async def show_student(message: Message, name: str):
         for t in tasks
     ]
     text = limited(f"👤 <b>Задачи по «{esc(name)}»</b>\n\n", lines)
-    await message.answer(text, reply_markup=tasks_kb(tasks[:25]))
+    await render(event, text, tasks_kb(tasks[:25]))
 
 
 @router.message(Command("student"))
@@ -226,7 +231,7 @@ async def cmd_student(message: Message, state: FSMContext):
     args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
         await state.set_state(StudentSearch.waiting_name)
-        await message.answer("Введи фамилию ученика:")
+        await render(message, "Введи фамилию ученика (можно часть):", cancel_kb())
         return
 
     await state.clear()
@@ -244,7 +249,7 @@ async def process_student_search(message: Message, state: FSMContext):
 @router.message(Command("add"))
 async def cmd_add(message: Message, state: FSMContext):
     await state.set_state(AddTask.category)
-    await message.answer("Выбери категорию:", reply_markup=categories_kb())
+    await render(message, "Выбери категорию:", categories_kb())
 
 
 @router.callback_query(AddTask.category, F.data.startswith("cat:"))
@@ -252,7 +257,7 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     category = callback.data.split(":")[1]
     await state.update_data(category=category)
     await state.set_state(AddTask.student)
-    await callback.message.edit_text("Введи фамилию (или ФИО) ученика:")
+    await render(callback, "Введи фамилию (или ФИО) ученика:", cancel_kb())
     await callback.answer()
 
 
@@ -260,14 +265,14 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
 async def process_student(message: Message, state: FSMContext):
     await state.update_data(student_name=message.text.strip())
     await state.set_state(AddTask.due_date)
-    await message.answer(DATE_PROMPT)
+    await render(message, DATE_PROMPT, cancel_kb())
 
 
 @router.message(AddTask.due_date, TEXT)
 async def process_due_date(message: Message, state: FSMContext):
     due = parse_date(message.text)
     if due is None:
-        await message.answer("Не понял дату. Пример: 15.10 или завтра")
+        await render(message, "Не понял дату. Пример: 15.10 или завтра\n\n" + DATE_PROMPT, cancel_kb())
         return
 
     await state.update_data(due_date=due.isoformat())
@@ -281,7 +286,7 @@ async def process_due_date(message: Message, state: FSMContext):
         f"Дата: {fmt_date(data['due_date'], '%d.%m.%Y')}"
     )
     await state.set_state(AddTask.confirm)
-    await message.answer(text, reply_markup=confirm_kb())
+    await render(message, text, confirm_kb())
 
 
 @router.callback_query(AddTask.confirm, F.data == "save_task")
@@ -296,17 +301,14 @@ async def save_task(callback: CallbackQuery, state: FSMContext):
         notes=None
     )
     await state.clear()
-    await callback.message.edit_text(
-        f"✅ Задача #{task_id} сохранена!",
-        reply_markup=main_menu_kb()
-    )
+    await render(callback, f"✅ Задача #{task_id} сохранена!", main_menu_kb())
     await callback.answer()
 
 
 @router.callback_query(F.data == "back_to_date")
 async def back_to_date(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddTask.due_date)
-    await callback.message.edit_text(DATE_PROMPT)
+    await render(callback, DATE_PROMPT, cancel_kb())
     await callback.answer()
 
 
@@ -333,7 +335,7 @@ async def show_task(callback: CallbackQuery):
         text += f"\nОписание: {esc(task['description'])}"
     if task["notes"]:
         text += f"\nЗаметки: {esc(task['notes'])}"
-    await callback.message.edit_text(text, reply_markup=task_actions_kb(task_id))
+    await render(callback, text, task_actions_kb(task_id))
     await callback.answer()
 
 
@@ -345,10 +347,7 @@ async def done_callback(callback: CallbackQuery):
         await callback.answer("Задача не найдена", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        f"✅ Задача #{task_id} выполнена.",
-        reply_markup=main_menu_kb()
-    )
+    await render(callback, f"✅ Задача #{task_id} выполнена.", main_menu_kb())
     await callback.answer()
 
 
@@ -360,16 +359,13 @@ async def delete_callback(callback: CallbackQuery):
         await callback.answer("Задача не найдена", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        f"🗑 Задача #{task_id} удалена.",
-        reply_markup=main_menu_kb()
-    )
+    await render(callback, f"🗑 Задача #{task_id} удалена.", main_menu_kb())
     await callback.answer()
 
 
 @router.callback_query(F.data == "back_to_list")
 async def back_to_list(callback: CallbackQuery):
-    await show_list(callback.message, callback.from_user.id)
+    await show_list(callback)
     await callback.answer()
 
 
@@ -379,17 +375,16 @@ async def back_to_list(callback: CallbackQuery):
 async def handle_ics(message: Message):
     doc = message.document
     if not doc.file_name or not doc.file_name.lower().endswith(".ics"):
-        await message.answer("Нужен файл с расширением .ics")
+        await render(message, "Нужен файл с расширением .ics", main_menu_kb())
         return
     if doc.file_size and doc.file_size > 5 * 1024 * 1024:
-        await message.answer("Файл слишком большой (больше 5 МБ).")
+        await render(message, "Файл слишком большой (больше 5 МБ).", main_menu_kb())
         return
-
-    status_msg = await message.answer("Читаю календарь...")
 
     try:
         from icalendar import Calendar  # должен быть в requirements.txt
 
+        # скачиваем до render(): он удаляет сообщение с файлом из чата
         buf = await message.bot.download(doc)
         cal = Calendar.from_ical(buf.read())
 
@@ -424,7 +419,7 @@ async def handle_ics(message: Message):
 
         events = sorted(found)
         if not events:
-            await status_msg.edit_text("В календаре нет событий на ближайшие 30 дней.")
+            await render(message, "В календаре нет событий на ближайшие 30 дней.", main_menu_kb())
             return
 
         created = 0
@@ -448,12 +443,12 @@ async def handle_ics(message: Message):
             text += f"Уже были в базе: {skipped}\n"
         text += "\nБлижайшие события:\n"
         for d, s in events[:15]:
-            text += f"• {d.strftime('%d.%m')} — {esc(s)}\n"
+            text += f"• {d.strftime('%d.%m')} — {esc(s[:60])}\n"
         if len(events) > 15:
             text += f"\n...и ещё {len(events) - 15}"
 
-        await status_msg.edit_text(text, reply_markup=main_menu_kb())
+        await render(message, text, main_menu_kb())
 
     except Exception as e:
         logging.exception("Ошибка импорта .ics")
-        await status_msg.edit_text(f"Ошибка при чтении календаря:\n<code>{esc(e)}</code>")
+        await render(message, f"Ошибка при чтении календаря:\n<code>{esc(e)}</code>", main_menu_kb())
