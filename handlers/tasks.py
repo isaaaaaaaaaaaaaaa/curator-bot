@@ -33,7 +33,6 @@ class AddTask(StatesGroup):
     student = State()
     description = State()
     due_date = State()
-    notes = State()
     confirm = State()
 
 
@@ -220,17 +219,6 @@ async def process_due_date(message: Message, state: FSMContext):
         return
 
     await state.update_data(due_date=due.isoformat())
-    await state.set_state(AddTask.notes)
-    await message.answer("Дополнительные заметки (или «-» если нет):")
-
-
-@router.message(AddTask.notes, TEXT)
-async def process_notes(message: Message, state: FSMContext):
-    notes = message.text.strip()
-    if notes == "-":
-        notes = None
-    await state.update_data(notes=notes)
-
     data = await state.get_data()
     cat = esc(CATEGORIES.get(data["category"], data["category"]))
 
@@ -238,9 +226,8 @@ async def process_notes(message: Message, state: FSMContext):
         f"<b>Проверь задачу:</b>\n\n"
         f"Ученик: <b>{esc(data['student_name'])}</b>\n"
         f"Категория: {cat}\n"
-        f"Описание: {esc(data['description'])}\n"
-        f"Дата: {fmt_date(data['due_date'], '%d.%m.%Y')}\n"
-        f"Заметки: {esc(notes) or '—'}"
+        f"Задача: {esc(data['description'])}\n"
+        f"Дата: {fmt_date(data['due_date'], '%d.%m.%Y')}"
     )
     await state.set_state(AddTask.confirm)
     await message.answer(text, reply_markup=confirm_kb())
@@ -266,9 +253,13 @@ async def save_task(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "back_to_notes")
-async def back_to_notes(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AddTask.notes)
-    await callback.message.edit_text("Дополнительные заметки (или «-» если нет):")
+async def back_to_date(callback: CallbackQuery, state: FSMContext):
+    # callback_data "back_to_notes" оставил как есть, чтобы не трогать клавиатуры
+    await state.set_state(AddTask.due_date)
+    await callback.message.edit_text(
+        "Дата (ДД.ММ или ДД.ММ.ГГГГ).\n"
+        "Можно: сегодня, завтра, +3"
+    )
     await callback.answer()
 
 
@@ -290,9 +281,10 @@ async def show_task(callback: CallbackQuery):
         f"Категория: {esc(cat_name(task))}\n"
         f"Описание: {esc(task['description'])}\n"
         f"Дата: {fmt_date(task['due_date'], '%d.%m.%Y')}\n"
-        f"Статус: {status}\n"
-        f"Заметки: {esc(task['notes']) or '—'}"
+        f"Статус: {status}"
     )
+    if task["notes"]:
+        text += f"\nЗаметки: {esc(task['notes'])}"
     await callback.message.edit_text(text, reply_markup=task_actions_kb(task_id))
     await callback.answer()
 
