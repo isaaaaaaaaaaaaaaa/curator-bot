@@ -65,6 +65,16 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     builder.button(text="📝 Все задачи", callback_data="menu_list")
     builder.button(text="➕ Добавить задачу", callback_data="menu_add")
     builder.button(text="👤 По ученику", callback_data="menu_student")
+    builder.button(text="📆 Выбрать день", callback_data="menu_day")
     builder.button(text="📅 Импорт календаря", callback_data="menu_import")
+    builder.button(text="🧹 Очистить календарь", callback_data="menu_clear_calendar")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def clear_calendar_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 Да, удалить", callback_data="clear_calendar_yes")
+    builder.button(text="❌ Отмена", callback_data="cancel")
     builder.adjust(1)
     return builder.as_markup()
