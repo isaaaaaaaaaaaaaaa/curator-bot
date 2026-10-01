@@ -1,7 +1,7 @@
 import html
 import logging
 from datetime import date, datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 import pytz
 from aiogram import Router, F
@@ -44,11 +44,42 @@ class StudentSearch(StatesGroup):
     waiting_name = State()
 
 
+class DayPick(StatesGroup):
+    waiting_date = State()
+
+
 # ====================== ХЕЛПЕРЫ ======================
 
 def today_msk() -> date:
     # Railway живёт по UTC, поэтому date.today() ночью (00:00-03:00 МСК) даёт вчерашнюю дату
     return datetime.now(MSK).date()
+
+
+def parse_date(raw: str, for_view: bool = False) -> Optional[date]:
+    """ДД.ММ, ДД.ММ.ГГГГ, сегодня, завтра, +N.
+    Для просмотра дня (for_view=True) ещё работает "вчера", а ДД.ММ не перескакивает на следующий год."""
+    text = (raw or "").strip().lower()
+    today = today_msk()
+    try:
+        if text == "сегодня":
+            return today
+        if text == "завтра":
+            return today + timedelta(days=1)
+        if for_view and text == "вчера":
+            return today - timedelta(days=1)
+        if text.startswith("+") and text[1:].isdigit():
+            return today + timedelta(days=int(text[1:]))
+        parts = text.replace(",", ".").split(".")
+        if len(parts) == 2:
+            due = date(today.year, int(parts[1]), int(parts[0]))
+            if due < today and not for_view:
+                due = date(today.year + 1, int(parts[1]), int(parts[0]))
+            return due
+        if len(parts) == 3:
+            return date(int(parts[2]), int(parts[1]), int(parts[0]))
+    except (ValueError, OverflowError):
+        pass
+    return None
 
 
 def esc(value) -> str:
@@ -85,19 +116,25 @@ def limited(head: str, lines: List[str]) -> str:
 
 # ====================== СЕГОДНЯ / СПИСОК ======================
 
-async def show_today(message: Message, user_id: int):
-    today = today_msk()
-    tasks = await get_tasks_by_date(user_id, today)
+async def show_day(message: Message, user_id: int, day: date):
+    is_today = day == today_msk()
+    tasks = await get_tasks_by_date(user_id, day)
     if not tasks:
-        await message.answer("На сегодня задач нет 🎉", reply_markup=main_menu_kb())
+        empty = "На сегодня задач нет 🎉" if is_today else f"На {day.strftime('%d.%m.%Y')} задач нет 🎉"
+        await message.answer(empty, reply_markup=main_menu_kb())
         return
 
     lines = [
         f"• <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]{desc_part(t)}"
         for t in tasks
     ]
-    text = limited(f"📋 <b>План на сегодня ({today.strftime('%d.%m.%Y')})</b>\n\n", lines)
+    title = "План на сегодня" if is_today else "План на"
+    text = limited(f"📋 <b>{title} ({day.strftime('%d.%m.%Y')})</b>\n\n", lines)
     await message.answer(text, reply_markup=tasks_kb(tasks[:30]))
+
+
+async def show_today(message: Message, user_id: int):
+    await show_day(message, user_id, today_msk())
 
 
 async def show_list(message: Message, user_id: int):
@@ -129,6 +166,40 @@ async def cmd_list(message: Message):
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Отменил.", reply_markup=main_menu_kb())
+
+
+# ====================== КОНКРЕТНЫЙ ДЕНЬ ======================
+
+DAY_PROMPT = (
+    "Какой день показать?\n"
+    "ДД.ММ или ДД.ММ.ГГГГ. Можно: сегодня, завтра, вчера, +3"
+)
+
+
+@router.message(Command("day"))
+async def cmd_day(message: Message, state: FSMContext):
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2:
+        await state.set_state(DayPick.waiting_date)
+        await message.answer(DAY_PROMPT)
+        return
+
+    day = parse_date(args[1], for_view=True)
+    if day is None:
+        await message.answer("Не понял дату. Пример: /day 15.10")
+        return
+    await state.clear()
+    await show_day(message, message.from_user.id, day)
+
+
+@router.message(DayPick.waiting_date, TEXT)
+async def process_day(message: Message, state: FSMContext):
+    day = parse_date(message.text, for_view=True)
+    if day is None:
+        await message.answer("Не понял дату. Пример: 15.10 или завтра")
+        return
+    await state.clear()
+    await show_day(message, message.from_user.id, day)
 
 
 # ====================== ПОИСК ПО УЧЕНИКУ ======================
@@ -194,27 +265,8 @@ async def process_student(message: Message, state: FSMContext):
 
 @router.message(AddTask.due_date, TEXT)
 async def process_due_date(message: Message, state: FSMContext):
-    text = message.text.strip().lower()
-    today = today_msk()
-
-    try:
-        if text == "сегодня":
-            due = today
-        elif text == "завтра":
-            due = today + timedelta(days=1)
-        elif text.startswith("+") and text[1:].isdigit():
-            due = today + timedelta(days=int(text[1:]))
-        else:
-            parts = text.replace(",", ".").split(".")
-            if len(parts) == 2:
-                due = date(today.year, int(parts[1]), int(parts[0]))
-                if due < today:
-                    due = date(today.year + 1, int(parts[1]), int(parts[0]))
-            elif len(parts) == 3:
-                due = date(int(parts[2]), int(parts[1]), int(parts[0]))
-            else:
-                raise ValueError
-    except Exception:
+    due = parse_date(message.text)
+    if due is None:
         await message.answer("Не понял дату. Пример: 15.10 или завтра")
         return
 
