@@ -20,7 +20,8 @@ MAX_LEN = 3800  # запас до лимита телеграма в 4096
 def is_student_task(t: dict) -> bool:
     """Задача про конкретного ученика (не событие из календаря)."""
     name = (t["student_name"] or "-").strip().lower()
-    return name not in SKIP_NAMES and t["category"] not in CALENDAR_CATEGORIES
+    imported = "импортировано из .ics" in (t.get("notes") or "").lower()
+    return name not in SKIP_NAMES and t["category"] not in CALENDAR_CATEGORIES and not imported
 
 
 def fmt_due(due) -> str:
