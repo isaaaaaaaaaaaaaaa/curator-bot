@@ -37,16 +37,15 @@ def confirm_kb() -> InlineKeyboardMarkup:
 
 
 def tasks_kb(tasks: list) -> InlineKeyboardMarkup:
+    """Кнопки-номера (1, 2, 3...) по 5 в ряд. Соответствуют нумерации в тексте сообщения."""
     builder = InlineKeyboardBuilder()
-    for t in tasks:
-        status = "✅" if t["is_done"] else "⬜"
-        # У новых задач описания нет, поэтому показываем категорию
-        desc = (t["description"] or "").strip()
-        label = desc[:25] if desc else CATEGORIES.get(t["category"], t["category"])
-        text = f"{status} {(t['student_name'] or '-')[:15]} — {label}"
-        builder.button(text=text, callback_data=f"task:{t['id']}")
+    for i, t in enumerate(tasks, 1):
+        mark = "✅" if t["is_done"] else ""
+        builder.button(text=f"{mark}{i}", callback_data=f"task:{t['id']}")
     builder.button(text="◀️ Назад", callback_data="back_to_menu")
-    builder.adjust(1)
+    n = len(tasks)
+    rows = [5] * (n // 5) + ([n % 5] if n % 5 else [])
+    builder.adjust(*rows, 1)
     return builder.as_markup()
 
 
