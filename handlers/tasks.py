@@ -110,14 +110,30 @@ def fmt_date(iso, fmt: str = "%d.%m") -> str:
         return "?"
 
 
-def limited(head: str, lines: List[str]) -> str:
-    """Склеивает строки, пока влезает в лимит телеграма, и пишет сколько не поместилось."""
+MAX_BUTTONS = 30  # столько задач максимум показываем с кнопками
+
+
+def limited(head: str, lines: List[str], total: Optional[int] = None):
+    """Склеивает строки, пока влезает в лимит телеграма.
+    Возвращает (текст, сколько строк реально влезло). total = сколько задач всего (для «...и ещё N»)."""
+    total = total if total is not None else len(lines)
     text = head
     for i, line in enumerate(lines):
         if len(text) + len(line) > MAX_LEN:
-            return text + f"...и ещё {len(lines) - i}"
+            return text + f"...и ещё {total - i}", i
         text += line
-    return text
+    if total > len(lines):
+        text += f"...и ещё {total - len(lines)}"
+    return text, len(lines)
+
+
+def task_list_view(head: str, tasks: List[dict], line_fn):
+    """Нумерованный список задач в тексте + кнопки-номера под ним.
+    Полный текст задач виден в сообщении, а на кнопках только номера, чтобы ничего не обрезалось."""
+    visible = tasks[:MAX_BUTTONS]
+    lines = [f"<b>{i}.</b> {line_fn(t)}" for i, t in enumerate(visible, 1)]
+    text, shown = limited(head, lines, total=len(tasks))
+    return text, tasks_kb(visible[:shown])
 
 
 # ====================== СЕГОДНЯ / ДЕНЬ / СПИСОК ======================
@@ -131,13 +147,13 @@ async def show_day(event: Event, day: date):
         await render(event, empty, main_menu_kb())
         return
 
-    lines = [
-        f"• <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]{desc_part(t)}"
-        for t in tasks
-    ]
     title = "План на сегодня" if is_today else "План на"
-    text = limited(f"📋 <b>{title} ({day.strftime('%d.%m.%Y')})</b>\n\n", lines)
-    await render(event, text, tasks_kb(tasks[:30]))
+    head = f"📋 <b>{title} ({day.strftime('%d.%m.%Y')})</b>\n\n"
+    text, kb = task_list_view(
+        head, tasks,
+        lambda t: f"<b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]{desc_part(t)}"
+    )
+    await render(event, text, kb)
 
 
 async def show_today(event: Event):
@@ -150,13 +166,14 @@ async def show_list(event: Event):
         await render(event, "Активных задач нет.", main_menu_kb())
         return
 
-    lines = [
-        f"#{t['id']} • <b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}] "
-        f"до {fmt_date(t['due_date'])}{desc_part(t)}"
-        for t in tasks
-    ]
-    text = limited("📋 <b>Все активные задачи</b>\n\n", lines)
-    await render(event, text, tasks_kb(tasks[:25]))
+    text, kb = task_list_view(
+        "📋 <b>Все активные задачи</b>\n\n", tasks,
+        lambda t: (
+            f"<b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}] "
+            f"до {fmt_date(t['due_date'])}{desc_part(t)}"
+        )
+    )
+    await render(event, text, kb)
 
 
 @router.message(Command("today"))
@@ -218,12 +235,11 @@ async def show_student(event: Event, name: str):
         )
         return
 
-    lines = [
-        f"#{t['id']} [{esc(cat_name(t))}] до {fmt_date(t['due_date'])}{desc_part(t)}"
-        for t in tasks
-    ]
-    text = limited(f"👤 <b>Задачи по «{esc(name)}»</b>\n\n", lines)
-    await render(event, text, tasks_kb(tasks[:25]))
+    text, kb = task_list_view(
+        f"👤 <b>Задачи по «{esc(name)}»</b>\n\n", tasks,
+        lambda t: f"[{esc(cat_name(t))}] до {fmt_date(t['due_date'])}{desc_part(t)}"
+    )
+    await render(event, text, kb)
 
 
 @router.message(Command("student"))
