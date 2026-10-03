@@ -8,7 +8,8 @@ from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
 
 from database.db import get_tasks_by_date, get_overdue_tasks, get_all_users
-from keyboards.inline import CATEGORIES
+from keyboards.inline import CATEGORIES, main_menu_kb
+from ui import send_panel
 from config import GOALS_REMINDER, STUDENTS_REMINDER
 
 moscow = pytz.timezone("Europe/Moscow")
@@ -85,7 +86,8 @@ async def broadcast(bot: Bot, title: str, empty_text: str,
                 # просроченные события из календаря не показываем, только задачи по ученикам
                 overdue = [t for t in await get_overdue_tasks(user_id, today) if is_student_task(t)]
 
-            await bot.send_message(user_id, build_text(full_title, tasks, empty_text, overdue))
+            # напоминание становится панелью с меню: старая удаляется, чат не захламляется
+            await send_panel(bot, user_id, build_text(full_title, tasks, empty_text, overdue), main_menu_kb())
         except Exception:
             logging.exception("Не удалось отправить напоминание %s", user_id)
 
