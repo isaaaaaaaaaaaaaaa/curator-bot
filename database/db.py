@@ -180,3 +180,19 @@ async def delete_calendar_tasks(user_id: int) -> int:
         )
         await db.commit()
         return cursor.rowcount
+
+
+async def get_overdue_tasks(user_id: int, before: date) -> List[dict]:
+    """Невыполненные задачи, у которых дедлайн раньше указанной даты."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT * FROM tasks
+            WHERE user_id = ? AND is_done = 0 AND due_date < ?
+            ORDER BY due_date, category
+            """,
+            (user_id, before.isoformat())
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
