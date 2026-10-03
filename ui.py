@@ -76,3 +76,17 @@ async def render(event: Event, text: str,
         await _safe_delete(bot, chat_id, panel_id)
     sent = await bot.send_message(chat_id, text, reply_markup=kb)
     _panels[chat_id] = sent.message_id
+
+
+async def send_panel(bot, chat_id: int, text: str,
+                     kb: Optional[InlineKeyboardMarkup] = None) -> None:
+    """
+    Отправить сообщение как НОВУЮ панель (для напоминаний по расписанию):
+    оно приходит внизу чата, а прошлая панель удаляется.
+    Так в чате всегда одно сообщение с меню, и оно не улетает вверх.
+    """
+    old = _panels.get(chat_id)
+    sent = await bot.send_message(chat_id, text, reply_markup=kb)
+    _panels[chat_id] = sent.message_id
+    if old:
+        await _safe_delete(bot, chat_id, old)  # удаляем после отправки, чтобы не остаться без панели при ошибке
