@@ -196,3 +196,15 @@ async def get_overdue_tasks(user_id: int, before: date) -> List[dict]:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+# Что считаем НЕ задачей по ученику: события из календаря и задачи без ученика
+_SKIP_NAMES = {"из календаря", "календарь", "-"}
+_CALENDAR_CATEGORIES = {"calendar", "meeting"}
+
+
+def is_student_task(t: dict) -> bool:
+    """Задача, добавленная кнопкой «Добавить задачу» (про конкретного ученика), а не событие из календаря."""
+    name = (t.get("student_name") or "-").strip().lower()
+    imported = "импортировано из .ics" in (t.get("notes") or "").lower()
+    return name not in _SKIP_NAMES and t.get("category") not in _CALENDAR_CATEGORIES and not imported
