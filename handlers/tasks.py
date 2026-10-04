@@ -12,7 +12,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 from database.db import (
     add_task, get_tasks_by_date, get_active_tasks,
-    get_tasks_by_student, mark_done, get_task, delete_task, task_exists
+    get_tasks_by_student, mark_done, get_task, delete_task, task_exists,
+    get_overdue_tasks, is_student_task
 )
 from keyboards.inline import (
     categories_kb, confirm_kb, tasks_kb, task_actions_kb,
@@ -127,12 +128,23 @@ def limited(head: str, lines: List[str], total: Optional[int] = None):
     return text, len(lines)
 
 
-def task_list_view(head: str, tasks: List[dict], line_fn):
+def task_list_view(head: str, tasks: List[dict], line_fn, overdue=(), overdue_fn=None):
     """Нумерованный список задач в тексте + кнопки-номера под ним.
-    Полный текст задач виден в сообщении, а на кнопках только номера, чтобы ничего не обрезалось."""
-    visible = tasks[:MAX_BUTTONS]
-    lines = [f"<b>{i}.</b> {line_fn(t)}" for i, t in enumerate(visible, 1)]
-    text, shown = limited(head, lines, total=len(tasks))
+    Полный текст задач виден в сообщении, а на кнопках только номера, чтобы ничего не обрезалось.
+    overdue: просроченные задачи, они идут после основных под заголовком «Просрочено»."""
+    items = list(tasks) + list(overdue)
+    visible = items[:MAX_BUTTONS]
+    n_main = len(tasks)
+
+    lines = []
+    for i, t in enumerate(visible, 1):
+        if i <= n_main:
+            lines.append(f"<b>{i}.</b> {line_fn(t)}")
+        else:
+            prefix = "\n⚠️ <b>Просрочено</b>\n\n" if i == n_main + 1 else ""
+            lines.append(f"{prefix}<b>{i}.</b> {(overdue_fn or line_fn)(t)}")
+
+    text, shown = limited(head, lines, total=len(items))
     return text, tasks_kb(visible[:shown])
 
 
@@ -140,18 +152,33 @@ def task_list_view(head: str, tasks: List[dict], line_fn):
 # event: Message или CallbackQuery. Экран всегда показывается в одном сообщении-панели.
 
 async def show_day(event: Event, day: date):
+    user_id = event.from_user.id
     is_today = day == today_msk()
-    tasks = await get_tasks_by_date(event.from_user.id, day)
-    if not tasks:
+    tasks = await get_tasks_by_date(user_id, day)
+
+    # В «Сегодня» просроченные задачи по ученикам остаются, пока их не отметят выполненными
+    overdue = []
+    if is_today:
+        overdue = [t for t in await get_overdue_tasks(user_id, day) if is_student_task(t)]
+
+    if not tasks and not overdue:
         empty = "На сегодня задач нет 🎉" if is_today else f"На {day.strftime('%d.%m.%Y')} задач нет 🎉"
         await render(event, empty, main_menu_kb())
         return
 
     title = "План на сегодня" if is_today else "План на"
     head = f"📋 <b>{title} ({day.strftime('%d.%m.%Y')})</b>\n\n"
+    if not tasks:
+        head += "На сегодня задач нет.\n"
+
     text, kb = task_list_view(
         head, tasks,
-        lambda t: f"<b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]{desc_part(t)}"
+        lambda t: f"<b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}]{desc_part(t)}",
+        overdue=overdue,
+        overdue_fn=lambda t: (
+            f"<b>{esc(t['student_name'])}</b> [{esc(cat_name(t))}] "
+            f"до {fmt_date(t['due_date'])}{desc_part(t)}"
+        ),
     )
     await render(event, text, kb)
 
