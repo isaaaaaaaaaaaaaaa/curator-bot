@@ -7,22 +7,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
 
-from database.db import get_tasks_by_date, get_overdue_tasks, get_all_users
+from database.db import get_tasks_by_date, get_overdue_tasks, get_all_users, is_student_task
 from keyboards.inline import CATEGORIES, main_menu_kb
 from ui import send_panel
 from config import GOALS_REMINDER, STUDENTS_REMINDER
 
 moscow = pytz.timezone("Europe/Moscow")
-SKIP_NAMES = {"из календаря", "календарь", "-"}
-CALENDAR_CATEGORIES = {"calendar", "meeting"}
 MAX_LEN = 3800  # запас до лимита телеграма в 4096
-
-
-def is_student_task(t: dict) -> bool:
-    """Задача про конкретного ученика (не событие из календаря)."""
-    name = (t["student_name"] or "-").strip().lower()
-    imported = "импортировано из .ics" in (t.get("notes") or "").lower()
-    return name not in SKIP_NAMES and t["category"] not in CALENDAR_CATEGORIES and not imported
 
 
 def fmt_due(due) -> str:
@@ -104,13 +95,13 @@ async def send_goals_reminder(bot: Bot):
 
 
 async def send_students_reminder(bot: Bot):
-    """Вечер: только задачи по ученикам на сегодня."""
+    """Вечер: задачи по ученикам на сегодня + просроченные, пока не выполнены."""
     await broadcast(
         bot,
         f"👥 <b>{STUDENTS_REMINDER} — Задачи по ученикам на сегодня ({{date}})</b>",
         "На сегодня задач по ученикам нет.",
         only_students=True,
-        with_overdue=False,
+        with_overdue=True,
     )
 
 
@@ -125,7 +116,8 @@ def setup_scheduler(bot: Bot):
         scheduler.add_job(
             job,
             # таймзона именно в триггере, иначе cron считает по UTC
-            CronTrigger(hour=hour, minute=minute, timezone=moscow),
+            # day_of_week="mon-sat": по воскресеньям напоминаний нет (день по Москве)
+            CronTrigger(hour=hour, minute=minute, day_of_week="mon-sat", timezone=moscow),
             args=[bot],
         )
 
